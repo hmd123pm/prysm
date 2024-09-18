@@ -42,6 +42,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Refactored light client code to make it more readable and make future PRs easier.
 - Updated Libp2p Dependencies to allow prysm to use gossipsub v1.2 .
 - Updated Sepolia bootnodes.
+- Updated correlation penalty for EIP-7251. 
 
 ### Deprecated
 - `--disable-grpc-gateway` flag is deprecated due to grpc gateway removal.
