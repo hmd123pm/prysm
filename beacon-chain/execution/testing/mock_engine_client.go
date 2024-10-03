@@ -106,6 +106,10 @@ func (e *EngineClient) ReconstructFullBellatrixBlockBatch(
 	return fullBlocks, nil
 }
 
+func (e *EngineClient) ReconstructBlobSidecars(context.Context, interfaces.ReadOnlySignedBeaconBlock, [32]byte) ([]blocks.VerifiedROBlob, error) {
+	return nil, nil
+}
+
 // GetTerminalBlockHash --
 func (e *EngineClient) GetTerminalBlockHash(ctx context.Context, transitionTime uint64) ([]byte, bool, error) {
 	ttd := new(big.Int)

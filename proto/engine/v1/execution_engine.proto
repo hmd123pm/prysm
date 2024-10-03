@@ -227,3 +227,8 @@ message Blob {
 message ExchangeCapabilities {
 	repeated string supported_methods = 1;
 }
+
+message BlobAndProof{
+	bytes blob = 1 [(ethereum.eth.ext.ssz_size) = "blob.size"];
+	bytes kzg_proof = 2 [(ethereum.eth.ext.ssz_size) = "48"];
+}

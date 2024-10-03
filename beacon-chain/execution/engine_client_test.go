@@ -37,9 +37,9 @@ import (
 )
 
 var (
-	_ = PayloadReconstructor(&Service{})
+	_ = Reconstructor(&Service{})
 	_ = EngineCaller(&Service{})
-	_ = PayloadReconstructor(&Service{})
+	_ = Reconstructor(&Service{})
 	_ = EngineCaller(&mocks.EngineClient{})
 )
 
