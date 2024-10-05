@@ -75,6 +75,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Light client support: fix light client attested header execution fields' wrong version bug.
 - Testing: added custom matcher for better push settings testing.
 - Registered `GetDepositSnapshot` Beacon API endpoint.
+- Fix skipping partial withdrawals count.
 
 ### Security
 
