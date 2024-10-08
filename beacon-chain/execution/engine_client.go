@@ -14,6 +14,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/pkg/errors"
 	"github.com/prysmaticlabs/prysm/v5/beacon-chain/execution/types"
+	"github.com/prysmaticlabs/prysm/v5/beacon-chain/verification"
 	fieldparams "github.com/prysmaticlabs/prysm/v5/config/fieldparams"
 	"github.com/prysmaticlabs/prysm/v5/config/params"
 	"github.com/prysmaticlabs/prysm/v5/consensus-types/blocks"
@@ -28,6 +29,7 @@ import (
 	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
+	"k8s.io/utils/strings/slices"
 )
 
 var (
@@ -491,6 +493,12 @@ func (s *Service) HeaderByNumber(ctx context.Context, number *big.Int) (*types.H
 func (s *Service) GetBlobs(ctx context.Context, versionedHashes []common.Hash) ([]*pb.BlobAndProof, error) {
 	ctx, span := trace.StartSpan(ctx, "powchain.engine-api-client.GetBlobs")
 	defer span.End()
+	s.capabilitiesLock.RLock()
+	if !slices.Contains(s.capabilities, GetBlobsV1) {
+		s.capabilitiesLock.RUnlock()
+		return nil, nil
+	}
+	s.capabilitiesLock.RUnlock()
 
 	result := make([]*pb.BlobAndProof, len(versionedHashes))
 	err := s.rpcClient.CallContext(ctx, &result, GetBlobsV1, versionedHashes)
@@ -543,6 +551,9 @@ func (s *Service) ReconstructBlobSidecars(ctx context.Context, block interfaces.
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get blobs")
 	}
+	if blobs == nil {
+		return nil, nil
+	}
 
 	// Get the block header and its hash tree root
 	header, err := block.Header()
@@ -559,7 +570,8 @@ func (s *Service) ReconstructBlobSidecars(ctx context.Context, block interfaces.
 		// Get the Merkle proof for the KZG commitment
 		proof, err := blocks.MerkleProofKZGCommitment(blockBody, index)
 		if err != nil {
-			return nil, errors.Wrap(err, "could not get Merkle proof KZG commitment")
+			log.WithError(err).Error("could not get Merkle proof for KZG commitment")
+			continue
 		}
 
 		// Create the BlobSidecar object
@@ -575,9 +587,20 @@ func (s *Service) ReconstructBlobSidecars(ctx context.Context, block interfaces.
 		// Create a read-only blob with the header root
 		roBlob, err := blocks.NewROBlobWithRoot(sidecar, blockRoot)
 		if err != nil {
-			return nil, errors.Wrap(err, "could not create RO blob with root")
+			log.WithError(err).Error("could not create RO blob with root")
+			continue
 		}
-		verifiedBlobs = append(verifiedBlobs, blocks.NewVerifiedROBlob(roBlob))
+		v := s.blobVerifier(roBlob, verification.ELMemPoolRequirements)
+		if err := v.SidecarKzgProofVerified(); err != nil {
+			log.WithError(err).Error("could not verify KZG proof for sidecar")
+			continue
+		}
+		verifiedBlob, err := v.VerifiedROBlob()
+		if err != nil {
+			log.WithError(err).Error("could not verify RO blob")
+			continue
+		}
+		verifiedBlobs = append(verifiedBlobs, verifiedBlob)
 	}
 
 	return verifiedBlobs, nil

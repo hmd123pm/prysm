@@ -29,6 +29,7 @@ import (
 	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state"
 	native "github.com/prysmaticlabs/prysm/v5/beacon-chain/state/state-native"
 	"github.com/prysmaticlabs/prysm/v5/beacon-chain/state/stategen"
+	"github.com/prysmaticlabs/prysm/v5/beacon-chain/verification"
 	"github.com/prysmaticlabs/prysm/v5/config/params"
 	"github.com/prysmaticlabs/prysm/v5/container/trie"
 	contracts "github.com/prysmaticlabs/prysm/v5/contracts/deposit"
@@ -155,6 +156,9 @@ type Service struct {
 	lastReceivedMerkleIndex int64 // Keeps track of the last received index to prevent log spam.
 	runError                error
 	preGenesisState         state.BeaconState
+	capabilities            []string
+	capabilitiesLock        sync.RWMutex
+	blobVerifier            verification.NewBlobVerifier
 }
 
 // NewService sets up a new instance with an ethclient when given a web3 endpoint as a string in the config.

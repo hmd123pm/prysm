@@ -6,7 +6,6 @@ import (
 	"os"
 	"path"
 
-	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/prysmaticlabs/prysm/v5/beacon-chain/blockchain"
 	"github.com/prysmaticlabs/prysm/v5/beacon-chain/core/transition/interop"
 	"github.com/prysmaticlabs/prysm/v5/config/features"
@@ -79,6 +78,9 @@ func (s *Service) attemptBlobSaveAndBroadcast(ctx context.Context, block interfa
 		log.WithError(err).Error("Failed to reconstruct blob sidecars")
 		return
 	}
+	if blobSidecars == nil {
+		return
+	}
 
 	// Get indices of already existing blobs in the database to avoid duplicates
 	indices, err := s.cfg.blobStorage.Indices(blockRoot)
@@ -93,17 +95,12 @@ func (s *Service) attemptBlobSaveAndBroadcast(ctx context.Context, block interfa
 			continue // Skip if the blob already exists in the database
 		}
 
-		if err := kzg4844.VerifyBlobProof(kzg4844.Blob(sidecar.Blob), kzg4844.Commitment(sidecar.KzgCommitment), kzg4844.Proof(sidecar.KzgProof)); err != nil {
-			log.WithFields(blobFields(sidecar.ROBlob)).WithError(err).Error("Failed to verify blob proof")
-			continue
+		if err := s.cfg.p2p.BroadcastBlob(ctx, sidecar.Index, sidecar.BlobSidecar); err != nil {
+			log.WithFields(blobFields(sidecar.ROBlob)).WithError(err).Error("Failed to broadcast blob sidecar")
 		}
 
 		if err := s.cfg.chain.ReceiveBlob(ctx, sidecar); err != nil {
 			log.WithFields(blobFields(sidecar.ROBlob)).WithError(err).Error("Failed to receive blob")
-		}
-
-		if err := s.cfg.p2p.BroadcastBlob(ctx, sidecar.Index, sidecar.BlobSidecar); err != nil {
-			log.WithFields(blobFields(sidecar.ROBlob)).WithError(err).Error("Failed to broadcast blob sidecar")
 		}
 
 		blobRecoveredFromELCount.Inc()
