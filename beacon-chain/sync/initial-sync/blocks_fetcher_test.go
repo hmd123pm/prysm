@@ -1328,12 +1328,6 @@ type blockParams struct {
 	hasBlobs bool
 }
 
-func rootFromUint64(u uint64) [fieldparams.RootLength]byte {
-	var root [fieldparams.RootLength]byte
-	binary.LittleEndian.PutUint64(root[:], u)
-	return root
-}
-
 func createPeer(t *testing.T, privateKeyOffset int, custodyCount uint64) (*enr.Record, peer.ID) {
 	privateKeyBytes := make([]byte, 32)
 	for i := 0; i < 32; i++ {
@@ -1356,52 +1350,6 @@ func createPeer(t *testing.T, privateKeyOffset int, custodyCount uint64) (*enr.R
 	return record, peerID
 }
 
-func TestCustodyAllNeededColumns(t *testing.T) {
-	const dataColumnsCount = 31
-
-	p2p := p2ptest.NewTestP2P(t)
-
-	dataColumns := make(map[uint64]bool, dataColumnsCount)
-	for i := range dataColumnsCount {
-		dataColumns[uint64(i)] = true
-	}
-
-	custodyCounts := [...]uint64{
-		4 * params.BeaconConfig().CustodyRequirement,
-		32 * params.BeaconConfig().CustodyRequirement,
-		4 * params.BeaconConfig().CustodyRequirement,
-		32 * params.BeaconConfig().CustodyRequirement,
-	}
-
-	expected := make(map[peer.ID]bool)
-
-	peersID := make(map[peer.ID]bool, len(custodyCounts))
-	for _, custodyCount := range custodyCounts {
-		peerRecord, peerID := createPeer(t, len(peersID), custodyCount)
-		peersID[peerID] = true
-		p2p.Peers().Add(peerRecord, peerID, nil, network.DirOutbound)
-		if custodyCount == 32*params.BeaconConfig().CustodyRequirement {
-			expected[peerID] = true
-		}
-	}
-
-	blocksFetcher := newBlocksFetcher(
-		context.Background(),
-		&blocksFetcherConfig{
-			p2p: p2p,
-		},
-	)
-
-	actual, err := blocksFetcher.custodyAllNeededColumns(peersID, dataColumns)
-	require.NoError(t, err)
-
-	require.Equal(t, len(expected), len(actual))
-	for peerID := range expected {
-		_, ok := actual[peerID]
-		require.Equal(t, true, ok)
-	}
-}
-
 func TestCustodyColumns(t *testing.T) {
 	blocksFetcher := newBlocksFetcher(context.Background(), &blocksFetcherConfig{
 		p2p: p2ptest.NewTestP2P(t),
@@ -1413,24 +1361,6 @@ func TestCustodyColumns(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, int(expected), len(actual))
-}
-
-func TestMinInt(t *testing.T) {
-	input := []int{1, 2, 3, 4, 5, 5, 4, 3, 2, 1}
-	const expected = 1
-
-	actual := minInt(input)
-
-	require.Equal(t, expected, actual)
-}
-
-func TestMaxInt(t *testing.T) {
-	input := []int{1, 2, 3, 4, 5, 5, 4, 3, 2, 1}
-	const expected = 5
-
-	actual := maxInt(input)
-
-	require.Equal(t, expected, actual)
 }
 
 // deterministicRandomness returns a random bytes array based on the seed
@@ -1592,28 +1522,195 @@ func defaultMockChain(t *testing.T, currentSlot uint64) (*mock.ChainService, *st
 	return chain, clock
 }
 
-func TestFirstLastIndices(t *testing.T) {
-	missingColumnsFromRoot := map[[fieldparams.RootLength]byte]map[uint64]bool{
-		rootFromUint64(42): {1: true, 3: true, 5: true},
-		rootFromUint64(43): {2: true, 4: true, 6: true},
-		rootFromUint64(44): {7: true, 8: true, 9: true},
+func TestBuildBwbSlices(t *testing.T) {
+	areBwbSlicesEqual := func(lefts, rights []bwbSlice) bool {
+		if len(lefts) != len(rights) {
+			return false
+		}
+
+		for i := range lefts {
+			left, right := lefts[i], rights[i]
+			if left.start != right.start {
+				return false
+			}
+
+			if left.end != right.end {
+				return false
+			}
+
+			if len(left.dataColumns) != len(right.dataColumns) {
+				return false
+			}
+
+			for dataColumn := range left.dataColumns {
+				if _, ok := right.dataColumns[dataColumn]; !ok {
+					return false
+				}
+			}
+		}
+
+		return true
 	}
 
-	indicesFromRoot := map[[fieldparams.RootLength]byte][]int{
-		rootFromUint64(42): {5, 6, 7},
-		rootFromUint64(43): {8, 9},
-		rootFromUint64(44): {3, 2, 1},
+	type missingColumnsWithCommitment struct {
+		areCommitments bool
+		missingColumns map[uint64]bool
 	}
 
-	const (
-		expectedFirst = 1
-		expectedLast  = 9
-	)
+	testCases := []struct {
+		name string
 
-	actualFirst, actualLast := firstLastIndices(missingColumnsFromRoot, indicesFromRoot)
+		// input
+		missingColumnsWithCommitments []*missingColumnsWithCommitment
 
-	require.Equal(t, expectedFirst, actualFirst)
-	require.Equal(t, expectedLast, actualLast)
+		// output
+		bwbSlices []bwbSlice
+	}{
+		{
+			name:                          "no item",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{},
+			bwbSlices:                     []bwbSlice{},
+		},
+		{
+			name:                          "one item, - no missing columns",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{{areCommitments: true, missingColumns: map[uint64]bool{}}},
+			bwbSlices:                     []bwbSlice{{start: 0, end: 0, dataColumns: map[uint64]bool{}}},
+		},
+		{
+			name:                          "one item - some missing columns",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}},
+			bwbSlices:                     []bwbSlice{{start: 0, end: 0, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}}},
+		},
+		{
+			name: "two items - no break",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+			},
+			bwbSlices: []bwbSlice{{start: 0, end: 1, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}}},
+		},
+		{
+			name: "three items - no break",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+			},
+			bwbSlices: []bwbSlice{{start: 0, end: 2, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}}},
+		},
+		{
+			name: "five items - columns break",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true}},
+				{areCommitments: true, missingColumns: map[uint64]bool{}},
+			},
+			bwbSlices: []bwbSlice{
+				{start: 0, end: 1, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{start: 2, end: 3, dataColumns: map[uint64]bool{1: true, 3: true}},
+				{start: 4, end: 4, dataColumns: map[uint64]bool{}},
+			},
+		},
+		{
+			name: "seven items - gap",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 0
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 1
+				nil,
+				nil,
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 2
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 3
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 4
+			},
+			bwbSlices: []bwbSlice{
+				{start: 0, end: 4, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+			},
+		},
+		{
+			name: "seven items - only breaks",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{}},                          // 0
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 1
+				nil,
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 2
+				{areCommitments: true, missingColumns: map[uint64]bool{2: true}},                   // 3
+				{areCommitments: true, missingColumns: map[uint64]bool{}},                          // 4
+			},
+			bwbSlices: []bwbSlice{
+				{start: 0, end: 0, dataColumns: map[uint64]bool{}},
+				{start: 1, end: 2, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{start: 3, end: 3, dataColumns: map[uint64]bool{2: true}},
+				{start: 4, end: 4, dataColumns: map[uint64]bool{}},
+			},
+		},
+		{
+			name: "thirteen items - some blocks without commitments",
+			missingColumnsWithCommitments: []*missingColumnsWithCommitment{
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 0
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 1
+				nil,
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true, 3: true, 5: true}}, // 2
+				{areCommitments: true, missingColumns: map[uint64]bool{2: true, 4: true}},          // 3
+				{areCommitments: false, missingColumns: nil},                                       // 4
+				{areCommitments: false, missingColumns: nil},                                       // 5
+				{areCommitments: true, missingColumns: map[uint64]bool{2: true, 4: true}},          // 6
+				nil,
+				nil,
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true}}, // 7
+				{areCommitments: true, missingColumns: map[uint64]bool{1: true}}, // 8
+				{areCommitments: false, missingColumns: nil},                     // 9
+				{areCommitments: false, missingColumns: nil},                     // 10
+
+			},
+			bwbSlices: []bwbSlice{
+				{start: 0, end: 2, dataColumns: map[uint64]bool{1: true, 3: true, 5: true}},
+				{start: 3, end: 6, dataColumns: map[uint64]bool{2: true, 4: true}},
+				{start: 7, end: 10, dataColumns: map[uint64]bool{1: true}},
+			},
+		},
+	}
+
+	// We don't care about the actual content of commitments, so we use a fake commitment.
+	fakeCommitment := make([]byte, 48)
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			bwbs := make([]blocks.BlockWithROBlobs, 0, len(tt.missingColumnsWithCommitments))
+			missingColumnsByRoot := make(map[[fieldparams.RootLength]byte]map[uint64]bool, len(tt.missingColumnsWithCommitments))
+			for i, missingColumnsWithCommitments := range tt.missingColumnsWithCommitments {
+				if missingColumnsWithCommitments == nil {
+					continue
+				}
+
+				missingColumns := missingColumnsWithCommitments.missingColumns
+
+				pbSignedBeaconBlock := util.NewBeaconBlockDeneb()
+
+				signedBeaconBlock, err := blocks.NewSignedBeaconBlock(pbSignedBeaconBlock)
+				require.NoError(t, err)
+
+				signedBeaconBlock.SetSlot(primitives.Slot(i))
+
+				if missingColumnsWithCommitments.areCommitments {
+					signedBeaconBlock.SetBlobKzgCommitments([][]byte{fakeCommitment})
+				}
+
+				roBlock, err := blocks.NewROBlock(signedBeaconBlock)
+				require.NoError(t, err)
+
+				bwb := blocks.BlockWithROBlobs{Block: roBlock}
+				bwbs = append(bwbs, bwb)
+
+				blockRoot := bwb.Block.Root()
+				missingColumnsByRoot[blockRoot] = missingColumns
+			}
+			bwbSlices, err := buildBwbSlices(bwbs, missingColumnsByRoot)
+			require.NoError(t, err)
+			require.Equal(t, true, areBwbSlicesEqual(tt.bwbSlices, bwbSlices))
+		})
+	}
 }
 
 func TestFetchDataColumnsFromPeers(t *testing.T) {
