@@ -410,7 +410,7 @@ func (f *blocksFetcher) peersWithSlotAndDataColumns(
 	peers []peer.ID,
 	targetSlot primitives.Slot,
 	dataColumns map[uint64]bool,
-	count int,
+	count uint64,
 ) ([]peer.ID, []string, error) {
 	peersCount := len(peers)
 

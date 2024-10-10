@@ -906,9 +906,13 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 				peersToFilter = f.p2p.Peers().Connected()
 			}
 
+			// Compute the block count of the request.
+			startSlot := bwbs[bwbsSlice.start].Block.Block().Slot()
+			endSlot := bwbs[bwbsSlice.end].Block.Block().Slot()
+			blockCount := uint64(endSlot - startSlot + 1)
+
 			// Filter peers that custody all columns we need and that are synced to the epoch.
-			count := bwbsSlice.end - bwbsSlice.start + 1
-			filteredPeers, descriptions, err := f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, count)
+			filteredPeers, descriptions, err := f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, blockCount)
 			if err != nil {
 				return errors.Wrap(err, "peers with slot and data columns")
 			}
@@ -939,19 +943,16 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 
 				time.Sleep(delay)
 
-				filteredPeers, descriptions, err = f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, count)
+				filteredPeers, descriptions, err = f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, blockCount)
 				if err != nil {
 					return errors.Wrap(err, "peers with slot and data columns")
 				}
 			}
 
 			// Build the request.
-			startSlot := bwbs[bwbsSlice.start].Block.Block().Slot()
-			blocksCount := uint64(lastSlot - startSlot + 1)
-
 			request := &p2ppb.DataColumnSidecarsByRangeRequest{
 				StartSlot: startSlot,
-				Count:     blocksCount,
+				Count:     blockCount,
 				Columns:   columnsSlice,
 			}
 
