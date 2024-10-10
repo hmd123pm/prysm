@@ -418,7 +418,7 @@ func (f *blocksFetcher) peersWithSlotAndDataColumns(
 	peers = f.filterPeers(ctx, peers, peersPercentagePerRequest)
 
 	// // Filter peers on bandwidth.
-	peers = f.hasSufficientBandwidth(peers, uint64(count))
+	peers = f.hasSufficientBandwidth(peers, count)
 
 	// Select peers which custody ALL wanted columns.
 	// Basically, it is very unlikely that a non-supernode peer will have custody of all columns.
