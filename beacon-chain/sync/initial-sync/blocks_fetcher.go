@@ -944,7 +944,6 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 			})
 
 			// Retrieve the missing data columns from the peers.
-			successCount := 0
 			for _, peer := range filteredPeers {
 				// Define useful log field.
 				log := log.WithField("peer", peer)
@@ -990,62 +989,26 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 					continue
 				}
 
+				globalSuccess := false
 				for _, dataColumn := range roDataColumns {
-					// Extract the block root from the data column.
-					blockRoot := dataColumn.BlockRoot()
-
-					// Find the position of the block in `bwbs` that corresponds to this block root.
-					indices, ok := indicesByRoot[blockRoot]
-					if !ok {
-						// The peer returned a data column that we did not expect.
-						// This is among others possible when the peer is not on the same fork.
-						continue
+					success := processDataColumn(bwbs, missingColumnsByRoot, f.cv, blocksByRoot, indicesByRoot, dataColumn)
+					if success {
+						globalSuccess = true
 					}
-
-					// Extract the block from the block root.
-					block, ok := blocksByRoot[blockRoot]
-					if !ok {
-						// This should never happen.
-						log.WithField("blockRoot", fmt.Sprintf("%#x", blockRoot)).Error("Fetch data columns from peers - block not found")
-						continue
-					}
-
-					// Verify the data column.
-					if err := verify.ColumnAlignsWithBlock(dataColumn, block, f.cv); err != nil {
-						log.WithError(err).WithFields(logrus.Fields{
-							"root":   fmt.Sprintf("%#x", blockRoot),
-							"slot":   block.Block().Slot(),
-							"column": dataColumn.ColumnIndex,
-						}).Warning("Fetch data columns from peers - fetched data column does not align with block")
-
-						// TODO: Should we downscore the peer for that?
-						continue
-					}
-
-					// Populate the corresponding items in `bwbs`.
-					for _, index := range indices {
-						bwbs[index].Columns = append(bwbs[index].Columns, dataColumn)
-					}
-
-					// Remove the column from the missing columns.
-					delete(missingColumnsByRoot[blockRoot], dataColumn.ColumnIndex)
-					if len(missingColumnsByRoot[blockRoot]) == 0 {
-						delete(missingColumnsByRoot, blockRoot)
-					}
-
-					successCount++
 				}
 
-				if successCount > 0 {
-					totalDuration := time.Since(requestStart)
-					log.WithFields(logrus.Fields{
-						"reqDuration":   requestDuration,
-						"totalDuration": totalDuration,
-					}).Debug("Fetch data columns from peers - got some columns")
-					continue outerLoop
+				if !globalSuccess {
+					log.Debug("Fetch data columns from peers - peer did not return any valid data columns")
+					continue
 				}
 
-				log.Debug("Fetch data columns from peers - peer did not return any valid data columns")
+				totalDuration := time.Since(requestStart)
+				log.WithFields(logrus.Fields{
+					"reqDuration":   requestDuration,
+					"totalDuration": totalDuration,
+				}).Debug("Fetch data columns from peers - got some columns")
+
+				continue outerLoop
 			}
 
 			log.WithFields(logrus.Fields{
@@ -1126,6 +1089,62 @@ func (f *blocksFetcher) waitForPeersForDataColumns(
 	}
 
 	return filteredPeers, nil
+}
+
+// processDataColumn mutates `bwbs` argument by adding the data column,
+// and mutates `missingColumnsByRoot` by removing the data column if the
+// data column passes all the check.
+func processDataColumn(
+	bwbs []blocks.BlockWithROBlobs,
+	missingColumnsByRoot map[[fieldparams.RootLength]byte]map[uint64]bool,
+	columnVerifier verification.NewColumnVerifier,
+	blocksByRoot map[[fieldparams.RootLength]byte]blocks.ROBlock,
+	indicesByRoot map[[fieldparams.RootLength]byte][]int,
+	dataColumn blocks.RODataColumn,
+) bool {
+	// Extract the block root from the data column.
+	blockRoot := dataColumn.BlockRoot()
+
+	// Find the position of the block in `bwbs` that corresponds to this block root.
+	indices, ok := indicesByRoot[blockRoot]
+	if !ok {
+		// The peer returned a data column that we did not expect.
+		// This is among others possible when the peer is not on the same fork.
+		return false
+	}
+
+	// Extract the block from the block root.
+	block, ok := blocksByRoot[blockRoot]
+	if !ok {
+		// This should never happen.
+		log.WithField("blockRoot", fmt.Sprintf("%#x", blockRoot)).Error("Fetch data columns from peers - block not found")
+		return false
+	}
+
+	// Verify the data column.
+	if err := verify.ColumnAlignsWithBlock(dataColumn, block, columnVerifier); err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"root":   fmt.Sprintf("%#x", blockRoot),
+			"slot":   block.Block().Slot(),
+			"column": dataColumn.ColumnIndex,
+		}).Warning("Fetch data columns from peers - fetched data column does not align with block")
+
+		// TODO: Should we downscore the peer for that?
+		return false
+	}
+
+	// Populate the corresponding items in `bwbs`.
+	for _, index := range indices {
+		bwbs[index].Columns = append(bwbs[index].Columns, dataColumn)
+	}
+
+	// Remove the column from the missing columns.
+	delete(missingColumnsByRoot[blockRoot], dataColumn.ColumnIndex)
+	if len(missingColumnsByRoot[blockRoot]) == 0 {
+		delete(missingColumnsByRoot, blockRoot)
+	}
+
+	return true
 }
 
 // requestBlocks is a wrapper for handling BeaconBlocksByRangeRequest requests/streams.
