@@ -893,10 +893,11 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 	outerLoop:
 		for _, bwbsSlice := range bwbsSlices {
 			lastSlot := bwbs[bwbsSlice.end].Block.Block().Slot()
-			columnsSlice := sortedSliceFromMap(bwbsSlice.dataColumns)
+			dataColumnsSlice := sortedSliceFromMap(bwbsSlice.dataColumns)
+			dataColumnCount := uint64(len(dataColumnsSlice))
 
 			// Filter out slices that are already complete.
-			if len(columnsSlice) == 0 {
+			if dataColumnCount == 0 {
 				continue
 			}
 
@@ -911,49 +912,16 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 			endSlot := bwbs[bwbsSlice.end].Block.Block().Slot()
 			blockCount := uint64(endSlot - startSlot + 1)
 
-			// Filter peers that custody all columns we need and that are synced to the epoch.
-			filteredPeers, descriptions, err := f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, blockCount)
+			filteredPeers, err := f.waitForPeersForDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, blockCount)
 			if err != nil {
-				return errors.Wrap(err, "peers with slot and data columns")
-			}
-
-			// Define nice columns log field.
-			var columnsLog interface{} = "all"
-
-			columnsCount := uint64(len(columnsSlice))
-			numberOfColuns := params.BeaconConfig().NumberOfColumns
-			if columnsCount < numberOfColuns {
-				columnsLog = columnsSlice
-			}
-
-			// Wait if no suitable peers are available.
-			for len(filteredPeers) == 0 {
-				log.
-					WithFields(logrus.Fields{
-						"peers":        peersToFilter,
-						"waitDuration": delay,
-						"targetSlot":   lastSlot,
-						"columns":      columnsLog,
-					}).
-					Warning("Fetch data columns from peers - no peers available to retrieve missing data columns, retrying later")
-
-				for _, description := range descriptions {
-					log.Debug(description)
-				}
-
-				time.Sleep(delay)
-
-				filteredPeers, descriptions, err = f.peersWithSlotAndDataColumns(ctx, peersToFilter, lastSlot, bwbsSlice.dataColumns, blockCount)
-				if err != nil {
-					return errors.Wrap(err, "peers with slot and data columns")
-				}
+				return errors.Wrap(err, "wait for peers for data columns")
 			}
 
 			// Build the request.
 			request := &p2ppb.DataColumnSidecarsByRangeRequest{
 				StartSlot: startSlot,
 				Count:     blockCount,
-				Columns:   columnsSlice,
+				Columns:   dataColumnsSlice,
 			}
 
 			// Get `bwbs` indices indexed by root.
@@ -963,6 +931,12 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 			blocksByRoot := blockFromRoot(bwbs)
 
 			// Prepare nice log fields.
+			var columnsLog interface{} = "all"
+			numberOfColuns := params.BeaconConfig().NumberOfColumns
+			if dataColumnCount < numberOfColuns {
+				columnsLog = dataColumnsSlice
+			}
+
 			log := log.WithFields(logrus.Fields{
 				"start":   request.StartSlot,
 				"count":   request.Count,
@@ -1092,6 +1066,66 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 
 	log.WithField("duration", time.Since(start)).Debug("Fetch data columns from peers - success")
 	return nil
+}
+
+// waitForPeersForDataColumns filters `peers` to only include peers that are:
+// - synced up to `lastSlot`,
+// - custody all columns in `dataColumns`, and
+// - have bandwidth to serve `blockCount` blocks.
+// It waits until at least one peer is available.
+func (f *blocksFetcher) waitForPeersForDataColumns(
+	ctx context.Context,
+	peers []peer.ID,
+	lastSlot primitives.Slot,
+	dataColumns map[uint64]bool,
+	blockCount uint64,
+) ([]peer.ID, error) {
+	// Time to wait before retrying to find new peers.
+	const delay = 5 * time.Second
+
+	// Filter peers that custody all columns we need and that are synced to the epoch.
+	filteredPeers, descriptions, err := f.peersWithSlotAndDataColumns(ctx, peers, lastSlot, dataColumns, blockCount)
+	if err != nil {
+		return nil, errors.Wrap(err, "peers with slot and data columns")
+	}
+
+	// Compute data columns count
+	dataColumnCount := uint64(len(dataColumns))
+
+	// Sort columns.
+	columnsSlice := sortedSliceFromMap(dataColumns)
+
+	// Build a nice log field.
+	var columnsLog interface{} = "all"
+	numberOfColuns := params.BeaconConfig().NumberOfColumns
+	if dataColumnCount < numberOfColuns {
+		columnsLog = columnsSlice
+	}
+
+	// Wait if no suitable peers are available.
+	for len(filteredPeers) == 0 {
+		log.
+			WithFields(logrus.Fields{
+				"peers":        peers,
+				"waitDuration": delay,
+				"targetSlot":   lastSlot,
+				"columns":      columnsLog,
+			}).
+			Warning("Fetch data columns from peers - no peers available to retrieve missing data columns, retrying later")
+
+		for _, description := range descriptions {
+			log.Debug(description)
+		}
+
+		time.Sleep(delay)
+
+		filteredPeers, descriptions, err = f.peersWithSlotAndDataColumns(ctx, peers, lastSlot, dataColumns, blockCount)
+		if err != nil {
+			return nil, errors.Wrap(err, "peers with slot and data columns")
+		}
+	}
+
+	return filteredPeers, nil
 }
 
 // requestBlocks is a wrapper for handling BeaconBlocksByRangeRequest requests/streams.
