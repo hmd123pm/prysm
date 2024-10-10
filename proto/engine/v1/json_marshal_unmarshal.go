@@ -1140,6 +1140,8 @@ func (b *BlobAndProof) UnmarshalJSON(enc []byte) error {
 	proof := make([]byte, fieldparams.BLSPubkeyLength)
 	copy(proof, dec.KzgProof)
 	b.KzgProof = proof
+
+	return nil
 }
 
 type ExchangeCapabilitiesJSON struct {

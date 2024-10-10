@@ -92,6 +92,7 @@ func (s *Service) attemptBlobSaveAndBroadcast(ctx context.Context, block interfa
 	// Iterate through the reconstructed sidecars, save them to the chain, and broadcast them to peers
 	for i, sidecar := range blobSidecars {
 		if indices[i] {
+			log.Infof("Blob already exists in the database: %s", blobFields(sidecar.ROBlob))
 			continue // Skip if the blob already exists in the database
 		}
 

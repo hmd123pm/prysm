@@ -29,7 +29,6 @@ import (
 	"github.com/prysmaticlabs/prysm/v5/time/slots"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
-	"k8s.io/utils/strings/slices"
 )
 
 var (
@@ -306,6 +305,8 @@ func (s *Service) ExchangeCapabilities(ctx context.Context) ([]string, error) {
 	result := &pb.ExchangeCapabilities{}
 	err := s.rpcClient.CallContext(ctx, &result, ExchangeCapabilities, supportedEngineEndpoints)
 
+	log.Info(result.SupportedMethods)
+
 	var unsupported []string
 	for _, s1 := range supportedEngineEndpoints {
 		supported := false
@@ -493,12 +494,13 @@ func (s *Service) HeaderByNumber(ctx context.Context, number *big.Int) (*types.H
 func (s *Service) GetBlobs(ctx context.Context, versionedHashes []common.Hash) ([]*pb.BlobAndProof, error) {
 	ctx, span := trace.StartSpan(ctx, "powchain.engine-api-client.GetBlobs")
 	defer span.End()
-	s.capabilitiesLock.RLock()
-	if !slices.Contains(s.capabilities, GetBlobsV1) {
-		s.capabilitiesLock.RUnlock()
-		return nil, nil
-	}
-	s.capabilitiesLock.RUnlock()
+	// TODO: Engine get capabilities is broken
+	//s.capabilitiesLock.RLock()
+	//if !slices.Contains(s.capabilities, GetBlobsV1) {
+	//	s.capabilitiesLock.RUnlock()
+	//	return nil, nil
+	//}
+	//s.capabilitiesLock.RUnlock()
 
 	result := make([]*pb.BlobAndProof, len(versionedHashes))
 	err := s.rpcClient.CallContext(ctx, &result, GetBlobsV1, versionedHashes)
@@ -547,10 +549,12 @@ func (s *Service) ReconstructBlobSidecars(ctx context.Context, block interfaces.
 
 	// Initialize KZG hashes and retrieve blobs
 	kzgHashes := make([]common.Hash, len(kzgCommitments))
+	log.Infof("Reconstructing blob sidecars for block %d", len(kzgCommitments))
 	blobs, err := s.GetBlobs(ctx, kzgHashes)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get blobs")
 	}
+	log.Infof("Retrieved %d blobs", len(blobs))
 	if blobs == nil {
 		return nil, nil
 	}
@@ -564,6 +568,7 @@ func (s *Service) ReconstructBlobSidecars(ctx context.Context, block interfaces.
 	verifiedBlobs := make([]blocks.VerifiedROBlob, 0, len(blobs))
 	for index, blob := range blobs {
 		if blob == nil {
+			log.WithField("index", index).Error("nil blob")
 			continue
 		}
 
