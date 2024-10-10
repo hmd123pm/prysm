@@ -945,70 +945,12 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 
 			// Retrieve the missing data columns from the peers.
 			for _, peer := range filteredPeers {
-				// Define useful log field.
-				log := log.WithField("peer", peer)
+				success := f.fetchDataColumnFromPeer(ctx, bwbs, missingColumnsByRoot, blocksByRoot, indicesByRoot, peer, request)
 
-				// Wait for peer bandwidth if needed.
-				if err := func() error {
-					l := f.peerLock(peer)
-					l.Lock()
-					defer l.Unlock()
-
-					remaining := uint64(f.rateLimiter.Remaining(peer.String()))
-
-					// We're intentionally abusing the block rate limit here, treating data column requests as if they were block requests.
-					// Since column requests take more bandwidth than blocks, we should improve how we account for the different kinds
-					// of requests, more in proportion to the cost of serving them.
-					if remaining < request.Count {
-						log.Debug("Fetch data columns from peers - wait for bandwidth")
-						if err := f.waitForBandwidth(peer, request.Count); err != nil {
-							return errors.Wrap(err, "wait for bandwidth")
-						}
-					}
-
-					f.rateLimiter.Add(peer.String(), int64(request.Count))
-
-					return nil
-				}(); err != nil {
-					log.WithError(err).Warning("Fetch data columns from peers - could not wait for bandwidth")
-					continue
+				// If we have successfully retrieved some data columns, continue to the next slice.
+				if success {
+					continue outerLoop
 				}
-
-				// Send the request to the peer.
-				requestStart := time.Now()
-				roDataColumns, err := prysmsync.SendDataColumnsByRangeRequest(ctx, f.clock, f.p2p, peer, f.ctxMap, request)
-				if err != nil {
-					log.WithError(err).Warning("Fetch data columns from peers - could not send data columns by range request")
-					continue
-				}
-
-				requestDuration := time.Since(requestStart)
-
-				if len(roDataColumns) == 0 {
-					log.Debug("Fetch data columns from peers - peer did not return any data columns")
-					continue
-				}
-
-				globalSuccess := false
-				for _, dataColumn := range roDataColumns {
-					success := processDataColumn(bwbs, missingColumnsByRoot, f.cv, blocksByRoot, indicesByRoot, dataColumn)
-					if success {
-						globalSuccess = true
-					}
-				}
-
-				if !globalSuccess {
-					log.Debug("Fetch data columns from peers - peer did not return any valid data columns")
-					continue
-				}
-
-				totalDuration := time.Since(requestStart)
-				log.WithFields(logrus.Fields{
-					"reqDuration":   requestDuration,
-					"totalDuration": totalDuration,
-				}).Debug("Fetch data columns from peers - got some columns")
-
-				continue outerLoop
 			}
 
 			log.WithFields(logrus.Fields{
@@ -1018,12 +960,7 @@ func (f *blocksFetcher) fetchDataColumnsFromPeers(
 		}
 
 		if len(missingColumnsByRoot) > 0 {
-			totalMissingDataColumnsCount := 0
-			for _, columns := range missingColumnsByRoot {
-				totalMissingDataColumnsCount += len(columns)
-			}
-
-			log.WithField("count", totalMissingDataColumnsCount).Debug("Fetch data columns from peers - continue")
+			log.Debug("Fetch data columns from peers - continue")
 		}
 	}
 
@@ -1143,6 +1080,85 @@ func processDataColumn(
 	if len(missingColumnsByRoot[blockRoot]) == 0 {
 		delete(missingColumnsByRoot, blockRoot)
 	}
+
+	return true
+}
+
+// fetchDataColumnsFromPeer sends `request` to `peer`, then mutates:
+// - `bwbs` by adding the fetched data columns,
+// - `missingColumnsByRoot` by removing the fetched data columns.
+func (f *blocksFetcher) fetchDataColumnFromPeer(
+	ctx context.Context,
+	bwbs []blocks.BlockWithROBlobs,
+	missingColumnsByRoot map[[fieldparams.RootLength]byte]map[uint64]bool,
+	blocksByRoot map[[fieldparams.RootLength]byte]blocks.ROBlock,
+	indicesByRoot map[[fieldparams.RootLength]byte][]int,
+	peer peer.ID,
+	request *p2ppb.DataColumnSidecarsByRangeRequest,
+) bool {
+	// Define useful log field.
+	log := log.WithField("peer", peer)
+
+	// Wait for peer bandwidth if needed.
+	if err := func() error {
+		l := f.peerLock(peer)
+		l.Lock()
+		defer l.Unlock()
+
+		remaining := uint64(f.rateLimiter.Remaining(peer.String()))
+
+		// We're intentionally abusing the block rate limit here, treating data column requests as if they were block requests.
+		// Since column requests take more bandwidth than blocks, we should improve how we account for the different kinds
+		// of requests, more in proportion to the cost of serving them.
+		if remaining < request.Count {
+			log.Debug("Fetch data columns from peers - wait for bandwidth")
+			if err := f.waitForBandwidth(peer, request.Count); err != nil {
+				return errors.Wrap(err, "wait for bandwidth")
+			}
+		}
+
+		f.rateLimiter.Add(peer.String(), int64(request.Count))
+
+		return nil
+	}(); err != nil {
+		log.WithError(err).Warning("Fetch data columns from peers - could not wait for bandwidth")
+		return false
+	}
+
+	// Send the request to the peer.
+	requestStart := time.Now()
+	roDataColumns, err := prysmsync.SendDataColumnsByRangeRequest(ctx, f.clock, f.p2p, peer, f.ctxMap, request)
+	if err != nil {
+		log.WithError(err).Warning("Fetch data columns from peers - could not send data columns by range request")
+		return false
+	}
+
+	requestDuration := time.Since(requestStart)
+
+	if len(roDataColumns) == 0 {
+		log.Debug("Fetch data columns from peers - peer did not return any data columns")
+		return false
+	}
+
+	globalSuccess := false
+
+	for _, dataColumn := range roDataColumns {
+		success := processDataColumn(bwbs, missingColumnsByRoot, f.cv, blocksByRoot, indicesByRoot, dataColumn)
+		if success {
+			globalSuccess = true
+		}
+	}
+
+	if !globalSuccess {
+		log.Debug("Fetch data columns from peers - peer did not return any valid data columns")
+		return false
+	}
+
+	totalDuration := time.Since(requestStart)
+	log.WithFields(logrus.Fields{
+		"reqDuration":   requestDuration,
+		"totalDuration": totalDuration,
+	}).Debug("Fetch data columns from peers - got some columns")
 
 	return true
 }
